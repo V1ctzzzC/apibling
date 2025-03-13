@@ -7,6 +7,11 @@ import os
 import json
 import psutil
 import time
+from google.cloud import storage
+import datetime
+import pytz
+
+
 
 # Configurações do SFTP
 SFTP_HOST = 'sftp.marchon.com.br'
@@ -19,15 +24,39 @@ FILE_TO_CHECK = 'estoque_disponivel.csv'
 # Configuração da API
 API_URL = 'https://api.bling.com.br/Api/v3/estoques'
 LOG_FILE = "log_envio_api.log"
-
 # Definição do ID do depósito
 DEPOSITO_ID = 14888163276  # Substitua pelo ID do depósito desejado
 
+
+BUCKET_NAME = "apibling"  # Nome do bucket no Google Cloud
+
 def log_envio(mensagem):
-    """Salva logs do envio no arquivo de log."""
+    """Salva logs localmente, imprime na tela e envia para o bucket."""
+    brt_tz = pytz.timezone('America/Sao_Paulo')
+    data_hora = datetime.datetime.now(brt_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+    log_mensagem = f"[{data_hora}] {mensagem}"
+
+    # Salvar no arquivo local
     with open(LOG_FILE, "a", encoding="utf-8") as log:
-        log.write(mensagem + "\n")
-    print(mensagem)
+        log.write(log_mensagem + "\n")
+
+    # Exibir no terminal (para ver no Cloud Shell)
+    print(log_mensagem)
+
+    # Enviar para o bucket
+    enviar_log_para_bucket()
+def enviar_log_para_bucket():
+    """Envia o arquivo de log para o Google Cloud Storage."""
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(f"logs/{LOG_FILE}")  # Salva dentro da pasta "logs"
+
+        blob.upload_from_filename(LOG_FILE)
+        print(f"✅ Log enviado para {BUCKET_NAME}/logs/{LOG_FILE}")
+    except Exception as e:
+        print(f"⚠ Erro ao enviar log para o bucket: {e}")
 
 def conectar_sftp():
     """Conecta ao servidor SFTP e retorna uma sessão."""
@@ -40,7 +69,6 @@ def conectar_sftp():
     except Exception as e:
         print(f"Erro ao conectar ao servidor SFTP: {e}")
         return None
-
 def baixar_arquivo_sftp(sftp, remote_file_path, local_file_path):
     """Baixa um arquivo do SFTP para a máquina local."""
     try:
@@ -64,7 +92,6 @@ def ler_planilha_sftp(caminho_arquivo):
     except Exception as e:
         print(f"Erro ao ler a planilha do SFTP: {e}")
         return None
-
 def ler_planilha_usuario():
     """Solicita ao usuário a seleção de uma planilha e lê seus dados."""
     root = Tk()
@@ -85,7 +112,6 @@ def ler_planilha_usuario():
     except Exception as e:
         print(f"Erro ao ler a planilha: {e}")
         return None
-
 def buscar_correspondencias(sftp_df, usuario_df):
     """Faz a correspondência entre os produtos do usuário e os do SFTP."""
     if sftp_df is None or usuario_df is None:
@@ -108,7 +134,6 @@ def solicitar_bearer_token():
 def ajustar_estoque(valor):
     """Ajusta o valor do estoque, subtraindo 10, garantindo que não fique negativo."""
     return max(0, valor - 10)
-
 def enviar_dados_api(resultado_df, deposito_id):
     """Envia os dados processados para a API do Bling."""
     if resultado_df.empty:
@@ -132,7 +157,6 @@ def enviar_dados_api(resultado_df, deposito_id):
     session.headers.update(headers)
 
     log_envio("\n🔍 Iniciando envio de dados para a API...\n")
-
     # Contador de envios bem-sucedidos
     contador_envios = 0
     total_bytes_enviados = 0
@@ -169,7 +193,6 @@ def enviar_dados_api(resultado_df, deposito_id):
                         contador_envios += 1  # Incrementa o contador de envios
                     else:
                         log_envio(f"❌ Erro [{response.status_code}]: {response.text}{log_msg}")
-
                     # Calcular o tempo de resposta do servidor
                     response_time = send_end_time - send_start_time
                     log_envio(f"⏱ Tempo de resposta do servidor para {row['codigo_produto']}: {response_time:.2f} segundos")
@@ -189,15 +212,29 @@ def enviar_dados_api(resultado_df, deposito_id):
     log_envio(f"⏱ Tempo total de envio: {total_time:.2f} segundos")
     log_envio(f"📊 Velocidade de upload: {upload_speed / 1024:.2f} KB/s")
     log_envio(f"🖥 Uso de CPU: {cpu_usage}%")
-
 def salvar_planilha_resultado(resultado_df, nome_arquivo="resultado_correspondencias.xlsx"):
-    """Salva os resultados da correspondência em um arquivo Excel."""
+    """Salva os resultados da correspondência localmente e no bucket do Google Cloud."""
     try:
         resultado_df.to_excel(nome_arquivo, index=False)
         print(f"Resultados salvos em {os.path.abspath(nome_arquivo)}")
+
+        # Enviar para o bucket
+        salvar_no_bucket("apibling", nome_arquivo, f"resultados/{nome_arquivo}")
     except Exception as e:
         print(f"Erro ao salvar os resultados: {e}")
 
+
+def salvar_no_bucket(bucket_name, source_file_name, destination_blob_name):
+    """Salva um arquivo no bucket do Google Cloud Storage."""
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(destination_blob_name)
+
+        blob.upload_from_filename(source_file_name)
+        print(f"📂 Arquivo {source_file_name} enviado para o bucket {bucket_name} como {destination_blob_name}.")
+    except Exception as e:
+        print(f"❌ Erro ao salvar {source_file_name} no bucket: {e}")
 def main():
     sftp = conectar_sftp()
     if not sftp:
